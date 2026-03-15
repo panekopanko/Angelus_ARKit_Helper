@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "arkit_blendshape_tools"
-version = "0.7.3"
+version = "0.7.4"
 name = "ARKit Blendshape Helper"
 tagline = "Facilitate the process of working with ARKit blendshapes"
 maintainer = "SummonAngelus"

@@ -70,22 +70,19 @@ class AK_OT_add_arkit_shapes(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
-        targets = [t.obj for t in scene.ak_targets if t.obj]
-        if scene.ak_driver_mesh: targets.append(scene.ak_driver_mesh)
+        target = scene.ak_driver_mesh
             
-        if not targets:
-            self.report({'WARNING'}, "Assign Driver/Driven meshes first.")
+        if not target:
+            self.report({'WARNING'}, "Assign main Driver mesh first.")
             return {'CANCELLED'}
 
         all_arkit = [s for g in ARKIT_DEFAULTS.values() for s in g]
-
-        for ob in targets:
-            if ob.type != 'MESH': continue
-            if not ob.data.shape_keys: ob.shape_key_add(name="Basis")
-            kb = ob.data.shape_keys.key_blocks
-            for s_name in all_arkit:
-                if s_name not in kb: ob.shape_key_add(name=s_name)
-                kb[s_name].value = 0.0
+        
+        if not target.data.shape_keys: target.shape_key_add(name="Basis")
+        kb = target.data.shape_keys.key_blocks
+        for s_name in all_arkit:
+            if s_name not in kb: target.shape_key_add(name=s_name)
+            kb[s_name].value = 0.0
 
         bpy.ops.ak.autosort_shapes()
         return {'FINISHED'}
@@ -199,7 +196,7 @@ class AK_OT_mirror_blendshape(bpy.types.Operator):
                     left_shape.data[i].co = s_co
                     right_shape.data[i].co = s_co
                     
-        # 4. DIRECT DRIVER LINKING (Replaces the unstable bpy.ops call)
+        # 4. DIRECT DRIVER LINKING
         if driver_obj and driver_obj.data.shape_keys:
             for t in scene.ak_targets:
                 tar = t.obj
@@ -263,8 +260,10 @@ class AK_OT_create_drivers(bpy.types.Operator):
                 drv = t_kb.driver_add("value").driver
                 drv.type = 'SUM'
                 var = drv.variables.new()
-                var.name = "src_val"; var.type = 'SINGLE_PROP'
-                var.targets[0].id_type = 'KEY'; var.targets[0].id = src.data.shape_keys
+                var.name = "src_val"
+                var.type = 'SINGLE_PROP'
+                var.targets[0].id_type = 'KEY'
+                var.targets[0].id = src.data.shape_keys
                 var.targets[0].data_path = f'key_blocks["{key.name}"].value'
         return {'FINISHED'}
 
@@ -376,6 +375,46 @@ class AK_OT_delete_single_shape(bpy.types.Operator):
     def invoke(self, context, event):
         return context.window_manager.invoke_confirm(self, event)
 
+class AK_OT_add_single_arkit_shape(bpy.types.Operator):
+    bl_idname = "ak.add_single_arkit_shape"
+    bl_label = "Add Shapekey"
+    bl_description = "Adds the selected shapekey to all the secondary meshes, if they dont have it yet."
+    bl_options = {'REGISTER', 'UNDO'}
+
+    shape_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        scene = context.scene
+        targets = [t.obj for t in scene.ak_targets if t.obj]
+            
+        if not targets:
+            self.report({'WARNING'}, "Assign Driver/Driven meshes first.")
+            return {'CANCELLED'}
+
+        for ob in targets:
+            if ob.type != 'MESH': continue
+            if not ob.data.shape_keys: ob.shape_key_add(name="Basis")
+            
+            kb = ob.data.shape_keys.key_blocks
+            if self.shape_name not in kb: ob.shape_key_add(name=self.shape_name)
+            kb[self.shape_name].value = 0.0
+
+            t_kb = kb.get(self.shape_name)
+            
+            t_kb.driver_remove("value")
+            drv = t_kb.driver_add("value").driver
+            drv.type = 'SUM'
+            var = drv.variables.new()
+            var.name = "src_val"
+            var.type = 'SINGLE_PROP'
+            # SAFELY TARGET THE OBJECT TO AVOID CRASHES
+            var.targets[0].id_type = 'OBJECT'
+            var.targets[0].id = scene.ak_driver_mesh
+            var.targets[0].data_path = f'data.shape_keys.key_blocks["{self.shape_name}"].value'
+
+        bpy.ops.ak.autosort_shapes()
+        return {'FINISHED'}
+
 # --------------------------------------------------
 # UI PANELS
 # --------------------------------------------------
@@ -466,6 +505,10 @@ class AK_PT_panel(bpy.types.Panel):
                             # PASS THE KEYBLOCK DIRECTLY TO THE UI
                             row.prop(kb, "value", text=s_n)
                             
+                            # ADD BUTTON
+                            add_op = row.operator("ak.add_single_arkit_shape", text="", icon='ADD')
+                            add_op.shape_name = s_n
+
                             # THE SELECT BUTTON
                             sel_icon = 'RESTRICT_SELECT_OFF' if is_active else 'RESTRICT_SELECT_ON'
                             sel_op = row.operator("ak.select_shape_key", text="", icon=sel_icon)
@@ -486,7 +529,7 @@ classes = [
     AK_OT_target_add_selected, AK_OT_target_remove, 
     AK_OT_groups_toggle, AK_OT_mirror_blendshape,
     AK_OT_select_all_meshes, AK_OT_autosort_shapes, AK_OT_delete_single_shape,
-    AK_OT_select_shape_key
+    AK_OT_select_shape_key, AK_OT_add_single_arkit_shape
 ]
 
 def register():
