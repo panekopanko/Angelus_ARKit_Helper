@@ -1,0 +1,24 @@
+schema_version = "1.0.0"
+
+id = "arkit_blendshape_tools"
+version = "0.7.2"
+name = "ARKit Blendshape Helper"
+tagline = "Facilitate the process of working with ARKit blendshapes"
+maintainer = "SummonAngelus"
+type = "add-on"
+
+# # Optional: tag list defined by Blender and server, see:
+# # https://docs.blender.org/manual/en/dev/advanced/extensions/tags.html
+ tags = ["Animation", "Modeling",  "Mesh",  "Object", "Rigging", "User Interface"]
+
+# Minimum Blender version for the new Extension system
+blender_version_min = "4.2.0"
+
+# License conforming to https://spdx.org/licenses/ (use "SPDX: prefix)
+# https://docs.blender.org/manual/en/dev/advanced/extensions/licenses.html
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+#[support]
+#upstream = "https://github.com/your-repo"
