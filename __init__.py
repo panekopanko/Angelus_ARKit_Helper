@@ -34,6 +34,53 @@ def sync_all_active_indices(context, shape_name):
             idx = o.data.shape_keys.key_blocks.find(shape_name)
             if idx != -1:
                 o.active_shape_key_index = idx
+                
+def autosort_shapes_logic(context):
+    """Sorts shapes into ARKit folders by template order, then moves extras to 'Other'."""
+    scene = context.scene
+    master = scene.ak_driver_mesh
+    
+    if not master or not master.data.shape_keys:
+        return
+
+    kb = master.data.shape_keys.key_blocks
+    assigned_names = set()
+
+    # 1. Clear current CSV strings to rebuild them in the correct order
+    for g in scene.ak_groups:
+        g.shapes_csv = ""
+
+    # 2. Re-populate groups based on ARKIT_DEFAULTS order
+    for folder_name, shape_template_list in ARKIT_DEFAULTS.items():
+        # Ensure folder exists
+        group = next((g for g in scene.ak_groups if g.name == folder_name), None)
+        if not group:
+            group = scene.ak_groups.add()
+            group.name = folder_name
+        
+        # Extract only shapes that exist on the mesh, in the order of the template
+        found_in_mesh = [s for s in shape_template_list if s in kb and s != "Basis"]
+        assigned_names.update(found_in_mesh)
+        
+        group.shapes_csv = ",".join(found_in_mesh)
+
+    # 3. Combined "Refresh" Logic: Gather everything not in ARKIT_DEFAULTS
+    other_group = next((g for g in scene.ak_groups if g.name == "Other"), None)
+    if not other_group:
+        other_group = scene.ak_groups.add()
+        other_group.name = "Other"
+        
+    # Find every shape key that wasn't assigned to a standard folder
+    unassigned = [key.name for key in kb if key.name != "Basis" and key.name not in assigned_names]
+    
+    # Sort custom shapes alphabetically so L/R pairs stay together in 'Other'
+    unassigned.sort()
+    other_group.shapes_csv = ",".join(unassigned)
+
+    # 4. Clean up UI order (Move 'Other' to bottom)
+    other_idx = scene.ak_groups.find("Other")
+    if other_idx != -1:
+        scene.ak_groups.move(other_idx, len(scene.ak_groups) - 1)
 
 # --------------------------------------------------
 # DATA MODELS
@@ -84,7 +131,8 @@ class AK_OT_add_arkit_shapes(bpy.types.Operator):
             if s_name not in kb: target.shape_key_add(name=s_name)
             kb[s_name].value = 0.0
 
-        bpy.ops.ak.autosort_shapes()
+        autosort_shapes_logic(context)
+
         return {'FINISHED'}
     
 class AK_OT_autosort_shapes(bpy.types.Operator):
@@ -94,50 +142,7 @@ class AK_OT_autosort_shapes(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        scene = context.scene
-        master = scene.ak_driver_mesh
-        
-        if not master or not master.data.shape_keys:
-            return {'CANCELLED'}
-
-        kb = master.data.shape_keys.key_blocks
-        assigned_names = set()
-
-        # 1. Clear current CSV strings to rebuild them in the correct order
-        for g in scene.ak_groups:
-            g.shapes_csv = ""
-
-        # 2. Re-populate groups based on ARKIT_DEFAULTS order
-        for folder_name, shape_template_list in ARKIT_DEFAULTS.items():
-            # Ensure folder exists
-            group = next((g for g in scene.ak_groups if g.name == folder_name), None)
-            if not group:
-                group = scene.ak_groups.add()
-                group.name = folder_name
-            
-            # Extract only shapes that exist on the mesh, in the order of the template
-            found_in_mesh = [s for s in shape_template_list if s in kb and s != "Basis"]
-            assigned_names.update(found_in_mesh)
-            
-            group.shapes_csv = ",".join(found_in_mesh)
-
-        # 3. Combined "Refresh" Logic: Gather everything not in ARKIT_DEFAULTS
-        other_group = next((g for g in scene.ak_groups if g.name == "Other"), None)
-        if not other_group:
-            other_group = scene.ak_groups.add()
-            other_group.name = "Other"
-            
-        # Find every shape key that wasn't assigned to a standard folder
-        unassigned = [key.name for key in kb if key.name != "Basis" and key.name not in assigned_names]
-        
-        # Sort custom shapes alphabetically so L/R pairs stay together in 'Other'
-        unassigned.sort()
-        other_group.shapes_csv = ",".join(unassigned)
-
-        # 4. Clean up UI order (Move 'Other' to bottom)
-        other_idx = scene.ak_groups.find("Other")
-        if other_idx != -1:
-            scene.ak_groups.move(other_idx, len(scene.ak_groups) - 1)
+        autosort_shapes_logic(context)
 
         return {'FINISHED'}
 
@@ -217,7 +222,7 @@ class AK_OT_mirror_blendshape(bpy.types.Operator):
                         var.targets[0].id = driver_obj
                         var.targets[0].data_path = f'data.shape_keys.key_blocks["{n}"].value'
                 
-        bpy.ops.ak.autosort_shapes()
+        autosort_shapes_logic(context)
         
         self.report({'INFO'}, f"Split {self.shape_name} into {left_name} and {right_name} and linked drivers.")
         return {'FINISHED'}
@@ -369,7 +374,7 @@ class AK_OT_delete_single_shape(bpy.types.Operator):
             if kb:
                 master.shape_key_remove(kb)
                     
-        bpy.ops.ak.autosort_shapes()
+        autosort_shapes_logic(context)
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -412,7 +417,7 @@ class AK_OT_add_single_arkit_shape(bpy.types.Operator):
             var.targets[0].id = scene.ak_driver_mesh
             var.targets[0].data_path = f'data.shape_keys.key_blocks["{self.shape_name}"].value'
 
-        bpy.ops.ak.autosort_shapes()
+        autosort_shapes_logic(context)
         return {'FINISHED'}
 
 # --------------------------------------------------
@@ -529,12 +534,13 @@ classes = [
     AK_OT_target_add_selected, AK_OT_target_remove, 
     AK_OT_groups_toggle, AK_OT_mirror_blendshape,
     AK_OT_select_all_meshes, AK_OT_autosort_shapes, AK_OT_delete_single_shape,
-    AK_OT_select_shape_key, AK_OT_add_single_arkit_shape
-]
+    AK_OT_select_shape_key, AK_OT_add_single_arkit_shape,
+    ]
 
 def register():
     for c in classes: 
         bpy.utils.register_class(c)
+    
     
     s = bpy.types.Scene
     s.ak_targets = bpy.props.CollectionProperty(type=AK_Target)
@@ -543,10 +549,19 @@ def register():
     s.ak_driver_mesh = bpy.props.PointerProperty(type=bpy.types.Object, name="Driver")
     s.ak_show_mesh_setup = bpy.props.BoolProperty(default=True)
     s.ak_show_folders_setup = bpy.props.BoolProperty(default=True)
+    
 
 def unregister():
+    s = bpy.types.Scene
+    del s.ak_targets
+    del s.ak_target_index
+    del s.ak_groups
+    del s.ak_driver_mesh
+    del s.ak_show_mesh_setup
+    del s.ak_show_folders_setup
+
     for c in classes: 
         bpy.utils.unregister_class(c)
-
+    
 if __name__ == "__main__":
     register()
