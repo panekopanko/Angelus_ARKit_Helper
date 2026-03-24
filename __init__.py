@@ -18,6 +18,13 @@ ARKIT_DEFAULTS = {
     "Other": []
 }
 
+VRM_DEFAULTS = {
+    "Emotions": ["happy", "angry", "sad", "relaxed", "surprised", "neutral"],
+    "Visemes":  ["aa", "ih", "ou", "ee", "oh"],
+    "Blink":    ["blink", "blinkLeft", "blinkRight"],
+    "Look":     ["lookUp", "lookDown", "lookLeft", "lookRight"],
+}
+
 # --------------------------------------------------
 # UTILITIES
 # --------------------------------------------------
@@ -36,10 +43,10 @@ def sync_all_active_indices(context, shape_name):
                 o.active_shape_key_index = idx
                 
 def autosort_shapes_logic(context):
-    """Sorts shapes into ARKit folders by template order, then moves extras to 'Other'."""
+    """Sorts shapes into ARKit/VRM folders by template order, Corrective_/Jiggle_ by prefix, then 'Other'."""
     scene = context.scene
     master = scene.ak_driver_mesh
-    
+
     if not master or not master.data.shape_keys:
         return
 
@@ -50,37 +57,60 @@ def autosort_shapes_logic(context):
     for g in scene.ak_groups:
         g.shapes_csv = ""
 
-    # 2. Re-populate groups based on ARKIT_DEFAULTS order
+    # 2. Re-populate ARKit groups (always present)
     for folder_name, shape_template_list in ARKIT_DEFAULTS.items():
-        # Ensure folder exists
         group = next((g for g in scene.ak_groups if g.name == folder_name), None)
         if not group:
             group = scene.ak_groups.add()
             group.name = folder_name
-        
-        # Extract only shapes that exist on the mesh, in the order of the template
         found_in_mesh = [s for s in shape_template_list if s in kb and s != "Basis"]
         assigned_names.update(found_in_mesh)
-        
         group.shapes_csv = ",".join(found_in_mesh)
 
-    # 3. Combined "Refresh" Logic: Gather everything not in ARKIT_DEFAULTS
+    # 3. Re-populate VRM groups (only shown when shapes are present)
+    for folder_name, shape_template_list in VRM_DEFAULTS.items():
+        found_in_mesh = [s for s in shape_template_list if s in kb and s != "Basis"]
+        assigned_names.update(found_in_mesh)
+        if found_in_mesh:
+            group = next((g for g in scene.ak_groups if g.name == folder_name), None)
+            if not group:
+                group = scene.ak_groups.add()
+                group.name = folder_name
+            group.shapes_csv = ",".join(found_in_mesh)
+        else:
+            idx = scene.ak_groups.find(folder_name)
+            if idx != -1:
+                scene.ak_groups.remove(idx)
+
+    # 4. Prefix-based folders: Corrective_ and Jiggle_
+    all_shape_names = [key.name for key in kb if key.name != "Basis"]
+    for prefix, folder_name in [("Corrective_", "Corrective"), ("Jiggle_", "Jiggle")]:
+        prefix_shapes = sorted(s for s in all_shape_names if s.startswith(prefix) and s not in assigned_names)
+        assigned_names.update(prefix_shapes)
+        if prefix_shapes:
+            group = next((g for g in scene.ak_groups if g.name == folder_name), None)
+            if not group:
+                group = scene.ak_groups.add()
+                group.name = folder_name
+            group.shapes_csv = ",".join(prefix_shapes)
+        else:
+            idx = scene.ak_groups.find(folder_name)
+            if idx != -1:
+                scene.ak_groups.remove(idx)
+
+    # 5. Everything else → Other
     other_group = next((g for g in scene.ak_groups if g.name == "Other"), None)
     if not other_group:
         other_group = scene.ak_groups.add()
         other_group.name = "Other"
-        
-    # Find every shape key that wasn't assigned to a standard folder
-    unassigned = [key.name for key in kb if key.name != "Basis" and key.name not in assigned_names]
-    
-    # Sort custom shapes alphabetically so L/R pairs stay together in 'Other'
-    unassigned.sort()
+    unassigned = sorted(key.name for key in kb if key.name != "Basis" and key.name not in assigned_names)
     other_group.shapes_csv = ",".join(unassigned)
 
-    # 4. Clean up UI order (Move 'Other' to bottom)
-    other_idx = scene.ak_groups.find("Other")
-    if other_idx != -1:
-        scene.ak_groups.move(other_idx, len(scene.ak_groups) - 1)
+    # 6. Push special folders to the bottom in order: Corrective, Jiggle, Other
+    for fname in ["Corrective", "Jiggle", "Other"]:
+        idx = scene.ak_groups.find(fname)
+        if idx != -1:
+            scene.ak_groups.move(idx, len(scene.ak_groups) - 1)
 
 # --------------------------------------------------
 # DATA MODELS
@@ -135,6 +165,31 @@ class AK_OT_add_arkit_shapes(bpy.types.Operator):
 
         return {'FINISHED'}
     
+class AK_OT_add_vrm_shapes(bpy.types.Operator):
+    bl_idname = "ak.add_vrm_shapes"
+    bl_label = "Add VRM Shapes (Batch)"
+    bl_description = "Add the 18 default VRM blendshapes (Emotions, Visemes, Blink, Look)."
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        target = scene.ak_driver_mesh
+
+        if not target:
+            self.report({'WARNING'}, "Assign main Driver mesh first.")
+            return {'CANCELLED'}
+
+        all_vrm = [s for g in VRM_DEFAULTS.values() for s in g]
+
+        if not target.data.shape_keys: target.shape_key_add(name="Basis")
+        kb = target.data.shape_keys.key_blocks
+        for s_name in all_vrm:
+            if s_name not in kb: target.shape_key_add(name=s_name)
+            kb[s_name].value = 0.0
+
+        autosort_shapes_logic(context)
+        return {'FINISHED'}
+
 class AK_OT_autosort_shapes(bpy.types.Operator):
     bl_idname = "ak.autosort_shapes"
     bl_label = "Autosort Shapes"
@@ -187,19 +242,22 @@ class AK_OT_mirror_blendshape(bpy.types.Operator):
             right_shape = obj.shape_key_add(name=right_name, from_mix=False)
             
             # 3. Split based on X-Axis coordinates relative to THIS mesh's basis
+            #    +X = character's right side  →  Right shape deforms, Left stays at basis
+            #    -X = character's left side   →  Left shape deforms, Right stays at basis
+            #    center (|x| <= 0.001)        →  both stay at basis (clean half-shapes)
             for i, v in enumerate(obj.data.vertices):
                 b_co = basis.data[i].co
                 s_co = target_shape.data[i].co
-                
+
                 if b_co.x > 0.001:
-                    left_shape.data[i].co = s_co
-                    right_shape.data[i].co = b_co
+                    right_shape.data[i].co = s_co
+                    left_shape.data[i].co  = b_co
                 elif b_co.x < -0.001:
-                    left_shape.data[i].co = b_co
-                    right_shape.data[i].co = s_co
+                    left_shape.data[i].co  = s_co
+                    right_shape.data[i].co = b_co
                 else:
-                    left_shape.data[i].co = s_co
-                    right_shape.data[i].co = s_co
+                    left_shape.data[i].co  = b_co
+                    right_shape.data[i].co = b_co
                     
         # 4. DIRECT DRIVER LINKING
         if driver_obj and driver_obj.data.shape_keys:
@@ -453,8 +511,9 @@ class AK_PT_panel(bpy.types.Panel):
             col.operator("ak.target_remove", icon="REMOVE", text="")
             
             row = meshCol.row(align=True)
-            row.operator("ak.add_arkit_shapes", icon='SHAPEKEY_DATA',text="Add ARKit")
-            row.operator("ak.delete_all_shapes", icon='ERROR',text="")
+            row.operator("ak.add_arkit_shapes", icon='SHAPEKEY_DATA', text="Add ARKit")
+            row.operator("ak.add_vrm_shapes", icon='OUTLINER_OB_ARMATURE', text="Add VRM")
+            row.operator("ak.delete_all_shapes", icon='ERROR', text="")
 
         # 2. General Global Controls
         row = layout.row(align=True)
@@ -529,7 +588,7 @@ class AK_PT_panel(bpy.types.Panel):
 
 classes = [
     AK_GroupItem, AK_Target, AK_UL_targets, AK_PT_panel, 
-    AK_OT_add_arkit_shapes, AK_OT_create_drivers, AK_OT_remove_drivers, 
+    AK_OT_add_arkit_shapes, AK_OT_add_vrm_shapes, AK_OT_create_drivers, AK_OT_remove_drivers,
     AK_OT_select_basis, AK_OT_global_zero, AK_OT_delete_all_shapes, 
     AK_OT_target_add_selected, AK_OT_target_remove, 
     AK_OT_groups_toggle, AK_OT_mirror_blendshape,
